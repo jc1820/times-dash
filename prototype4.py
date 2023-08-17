@@ -8,15 +8,16 @@ from dash import Dash, dcc, html, Input, Output, State, dash_table
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 
-#initialise app with selected bootstrap theme ~ theme is used for styling
+#start app with selected bootstrap theme ~ theme is used for styling
 app = Dash(__name__, external_stylesheets=[dbc.themes.LUX])
 
 #create a dictionary to translate naming convention into sectors for user's understanding
 code_to_name = {
-    'ATM': 'Atmospheric',
+    'ATM': 'Total Emissions',
     'ELC': 'Electricity',
+    'TOT': 'Total Emissions',
     'IND': 'Industry',
-    'RES': 'Reserve',
+    'RES': 'Residential',
     'SNK': 'Sink',
     'TRA': 'Transport',
     'UPS': 'Upstream',
@@ -32,9 +33,8 @@ app.layout = dbc.Container([
                                    "color": "#007BFF",
                                    "margin": "20px 0"}), width=12)),
     
-
-   dbc.Row(dbc.Col([
-        html.H3("Welcome to the Data Visualization App!"),
+    dbc.Row(dbc.Col([
+        html.H3("Welcome to the TIMES Visualization App!"),
         html.Div("Upload your data to get started."),
     ], width=12, style={'margin': '20px'})),
 
@@ -54,15 +54,57 @@ app.layout = dbc.Container([
             'textAlign': 'center',
             'margin': '10px'
         },
-        # Allow multiple files to be uploaded
         multiple=True
+    ),
+    
+    # Display upload status
+    html.Div(id='upload-status', style={'margin': '10px', 'font-size': '14px'}),
+
+    # Dropdown for selecting scenario
+    html.Div(
+    "Select the scenario you wish to investigate:",
+    style={
+        'padding': '10px',
+        'font-size': '15px',
+        'text-align': 'left'
+        }
+    ),
+
+
+    dcc.Dropdown(
+        id='scenario-dropdown',
+        options=[],
+        value=None,  # Default value
+        placeholder="Select a scenario",
+        style={'width': '100%', 'margin': '10px'}
+    ),
+    
+    # Dropdown for selecting y-axis units
+    dcc.Dropdown(
+        id='y-axis-units-dropdown',
+        options=[
+            {'label': 'kT', 'value': 'kT'},
+            {'label': 'MT', 'value': 'MT'}
+        ],
+        value='kT',  # Default value
+        placeholder="Select y-axis units",
+        style={'width': '100%', 'margin': '10px'}
     ),
 
     dbc.Row(dbc.Col(id='tabs-content', width=12), className="mb-3"),
 ], className="pt-5 pb-5")
 
+# Callback to update upload status
+@app.callback(Output('upload-status', 'children'),
+              Input('upload-data-em', 'filename'))
+def update_upload_status(filenames_em):
+    if filenames_em is None:
+        return ''
+    else:
+        return 'Upload complete!'
 
-def parse_contents(contents, filename, date):
+
+def parse_contents(contents, filename, date, selected_y_units):
     """
     Parse the uploaded data file and generate graphs for each sector.
 
@@ -70,6 +112,7 @@ def parse_contents(contents, filename, date):
         contents (str): Base64-encoded content of the uploaded file.
         filename (str): Name of the uploaded file.
         date (int): Last modified date of the uploaded file.
+        selected_y_units (str): Selected y-axis units from the dropdown.
 
     Returns:
         dict: A dictionary containing graphs for each sector.
@@ -88,70 +131,106 @@ def parse_contents(contents, filename, date):
         print(e)
         return None
 
+    # Filter the data to include only rows with 'Timeslice' as 'ANNUAL'
+    if 'Timeslice' in df.columns:
+        df = df[df['Timeslice'] == 'ANNUAL']
+
     # Group the emissions data by the first three letters of the "Commodity" column and "Year" column
     if 'Commodity' in df.columns:
         df['First_Three_Letters'] = df['Commodity'].str[:3]
         df_new = df.groupby(['First_Three_Letters', 'Period'])['Pv'].sum().reset_index()
 
-        # Create a dictionary of graphs for each group
-        graphs_dict = {}
-        for group, group_df in df_new.groupby('First_Three_Letters'):
-            group_bar_fig = px.bar(group_df, x='Period', y='Pv', title=f"Bar Graph of Data ({group})", barmode='stack')
-            group_scatter_fig = px.scatter(group_df, x='Period', y='Pv', title=f"Scatter Plot of Data ({group})")
-            group_pie_fig = px.pie(group_df, names='Period', values='Pv', title=f"Pie Chart of Data ({group})")
-            group_line_fig = px.line(group_df, x='Period', y='Pv', title=f"Line Graph of Data ({group})")
-            graphs_dict[group] = (group_bar_fig, group_scatter_fig, group_pie_fig, group_line_fig)
+    # Create a dictionary of dataframes for each scenario
+    scenario_dataframes = {}
+    for scenario, scenario_df in df.groupby('Scenario'):
+        scenario_dataframes[scenario] = scenario_df
 
-        return graphs_dict
+    # Create a dictionary of graphs for each scenario and group
+    graphs_dict = {}
+    for scenario, scenario_df in scenario_dataframes.items():
+        scenario_graphs = {}
+        for group, group_df in scenario_df.groupby('First_Three_Letters'):
+            # Sum 'Pv' values within each group
+            summed_group_df = group_df.groupby('Period')['Pv'].sum().reset_index()
+            
+            if selected_y_units == 'MT':
+                summed_group_df['Pv'] /= 1000  # Convert kT to MT
+
+            # Create graphs for the summed group data
+            group_bar_fig = px.bar(summed_group_df, x='Period', y='Pv', title=f"Bar Graph of Data ({group})", barmode='stack')
+            group_bar_fig.update_xaxes(title_text='Year', dtick='Y1')
+            group_bar_fig.update_yaxes(title_text='Pv')
+
+            group_scatter_fig = px.scatter(summed_group_df, x='Period', y='Pv', title=f"Scatter Plot of Data ({group})")
+            group_scatter_fig.update_xaxes(title_text='Year')
+            group_scatter_fig.update_yaxes(title_text='Pv')
+
+            group_pie_fig = px.pie(summed_group_df, names='Period', values='Pv', title=f"Pie Chart of Data ({group})")
+
+            group_line_fig = px.line(summed_group_df, x='Period', y='Pv', title=f"Line Graph of Data ({group})")
+            group_line_fig.update_xaxes(title_text='Year')
+            group_line_fig.update_yaxes(title_text='Pv')
+
+            scenario_graphs[group] = (group_bar_fig, group_scatter_fig, group_pie_fig, group_line_fig)
+        graphs_dict[scenario] = scenario_graphs
+
+    return graphs_dict
+
+
+
+def update_scenario_dropdown(scenario_dataframes):
+    if scenario_dataframes is not None:
+        return [{'label': scenario, 'value': scenario} for scenario in scenario_dataframes.keys()]
     else:
-        return None
-
-
+        return []
+    
+    
 @app.callback(Output('tabs-content', 'children'),
+              Output('scenario-dropdown', 'options'),  # Add this line
               Input('upload-data-em', 'contents'),
+              Input('scenario-dropdown', 'value'),
+              Input('y-axis-units-dropdown', 'value'),
               State('upload-data-em', 'filename'),
               State('upload-data-em', 'last_modified'))
-def update_tabs(contents_em, filenames_em, dates_em):
-    """
-    Update the content of the tabs based on the uploaded data.
-
-    Parameters:
-        contents_em (list): List of base64-encoded contents of the uploaded files.
-        filenames_em (list): List of filenames of the uploaded files.
-        dates_em (list): List of last modified dates of the uploaded files.
-
-    Returns:
-        list: A list of Dash Tab components with updated content.
-    """
+def update_tabs(contents_em, selected_scenario, selected_y_units, filenames_em, dates_em):
     tabs = []
+    scenario_options = []  # List to store scenario dropdown options
 
     if contents_em is not None:
+        scenario_dataframes = {}
         for content, filename, date in zip(contents_em, filenames_em, dates_em):
-            df_dict = parse_contents(content, filename, date)
+            df_dict = parse_contents(content, filename, date, selected_y_units)  # Use selected_y_units here
             if df_dict is not None:
-                for group_code, (bar_fig, scatter_fig, pie_fig, line_fig) in df_dict.items():
-                    group_name = code_to_name.get(group_code, 'Unknown Group')
-                    group_tab = dcc.Tab(label=group_name, children=[
-                        dbc.Row([
-                            dbc.Col(dcc.Graph(figure=bar_fig), width=6),
-                            dbc.Col(dcc.Graph(figure=scatter_fig), width=6),
-                        ]),
-                        dbc.Row([
-                            dbc.Col(dcc.Graph(figure=pie_fig), width=6),
-                            dbc.Col(dcc.Graph(figure=line_fig), width=6),
-                        ]),
-                    ])
-                    tabs.append(group_tab)
-                    
+                scenario_dataframes.update(df_dict)
+                scenario_options = update_scenario_dropdown(scenario_dataframes)  # Update scenario dropdown options
+        
+        if selected_scenario is not None and selected_scenario in scenario_dataframes:
+            for group_code, (bar_fig, scatter_fig, pie_fig, line_fig) in scenario_dataframes[selected_scenario].items():
+                group_name = code_to_name.get(group_code, 'Unknown Group')
+                group_tab = dcc.Tab(label=group_name, children=[
+                    dbc.Row([
+                        dbc.Col(dcc.Graph(figure=bar_fig), width=6),
+                        dbc.Col(dcc.Graph(figure=scatter_fig), width=6),
+                    ]),
+                    dbc.Row([
+                        dbc.Col(dcc.Graph(figure=pie_fig), width=6),
+                        dbc.Col(dcc.Graph(figure=line_fig), width=6),
+                    ]),
+                ])
+                tabs.append(group_tab)
+
     if len(tabs) == 0:
         tabs.append(dcc.Tab(label='Welcome', children=[
             html.Div('''This is an interactive dashboard to help you
-                     visualise TIMES data, please upload a data file in
+                     visualize TIMES data, please upload a data file in
                      drag and drop above to generate dashboard.'''),
         ]))
 
-    return dcc.Tabs(tabs)
+    return dcc.Tabs(tabs), scenario_options  # Return both tabs content and scenario dropdown options
+
+
+
 
 if __name__ == '__main__':
-    app.run_server(debug=True, port=8057)
+    app.run_server(debug=True, port=8058)
 
