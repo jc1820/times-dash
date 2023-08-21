@@ -184,6 +184,9 @@ def update_scenario_dropdown(scenario_dataframes):
     else:
         return []
     
+
+
+    
     
 @app.callback(Output('tabs-content', 'children'),
               Output('scenario-dropdown', 'options'),  # Add this line
